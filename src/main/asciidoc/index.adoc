@@ -1,0 +1,1844 @@
+= Giganet - Módulo de Compras - API
+v2.16.0, Lucas Henrique, 17/09/2020
+:doctype: book
+:icons: font
+:source-highlighter: highlightjs
+:highlightjs-theme: github
+:toc: left
+:toclevels: 3
+:sectlinks:
+:sectnums:
+:toc-title: Lista de Recursos
+:version-label: 1.0
+:table-caption: Tabela
+:last-update-label: Última modificação
+
+[introduction]
+== Introdução
+
+Esta documentação tem como objetivo exemplificar o funcionamento da API para facilitar o desenvolvimento, manutenção e evolução do projeto ao longo do tempo.
+
+== Resumo da aplicação
+
+=== Fluxo dos processos
+
+O fluxo básico consiste nos seguintes passos:
+
+Um funcionário com acesso ao sistema cria uma solicitação com os itens desejados e as suas respectivas quantidades.
+Além disso, deve se selecionar centro de custo, especificar motivos, aprovador e os demais campos necessários.
+
+Após realizada uma solicitação, esta será encaminhada ao funcionário responsável pela aprovação.
+A aprovação é realizada por itens.
+Logo, o responsável pode aprovar alguns itens e rejeitar outros.
+Uma vez aprovado/rejeitado, um item não pode ser mais alterado.
+Os itens aprovados ficaram disponíveis para serem vinculados a cotações.
+Os itens rejeitados, serão desconsiderados.
+Caso o solicitante deseje, ele pode adicionar novos itens a solicitação uma vez que esta não foi totalmente aprovada.
+Caso ele opte por essa ação, ao salvar, uma nova aprovação será criada e reencaminhada ao responsável.
+
+Finalizado todos os passos de solicitação e aprovações iniciais, o responsável pela cotação pode criar cotações.
+Cotações podem ser compostas por 2 tipos de itens:
+- Itens os quais passaram por uma aprovação prévia.
+Estes carregarão o vínculo anterior durante todo o processo;
+- Itens avulsos, os quais o cotante pode adicionar e remover, sem necessariamente terem sido previamente aprovados;
+
+Aprovações de solicitações são apenas para um filtro inicial e agilizar o processo de usabilidade durante uma cotação.
+Em uma cotação, o cotante deve preencher todos os campos necessários relacionados a precos, unidades, valores, impostos, centro de custos (podendo ser o mesmo de uma solicitação), frete, entre outros.
+
+Cada item de uma cotação deve conter, no mínimo, um fornecedor selecionado como o escolhido para aquele item.
+Entretanto, pode ter diversos fornecedores associados durante o processo de cotação.
+
+Relatórios estão disponíveis para auxiliar o processo.
+Estes podem ser enviados diretamente para o email cadastrado do respectivo fornecedor.
+
+    Nota técnica: Todos os relatórios são gerados utilizando Jasper Reports. Os templates são construídos através do Jasper Studio, compilados e então anexados ao projeto. Este, por sua vez, os utilizam apenas passando os parâmetros e gerando o arquivo final.
+
+Após uma cotação ser marcada como finalizada, está seguirá para uma nova aprovação.
+Esta aprovação é por cotação.
+Logo, uma cotação é aprovada ou rejeitada. **Caso a cotação possua valor total menor ou igual ao valor limite permitido para aprovações automáticas, esta será aprovada imediatamente**, assumindo como responsável o usuário responsável pela cotação.
+
+Uma vez aprovada uma cotação, está seguirá para a proxima etapa, aqui chamada de *ordem de compra*.
+Uma ordem de compra diferente é gerada para cada fornecedor selecionado durante o processo de cotação.
+Exemplo: 1 cotação, 2 produtos, 1 fornecedor diferente para cada produto.
+Serão geradas duas ordens de compra, uma para cada fornecedor com os respectivos dados associados ao produto como preço, impostos, quantidade, etc.
+Como a ordem de compra é criada automaticamente, o valor do frete é dividido igualmente entre os fornecedores.
+Cabe ao responsável pela ordem de compra alterar manualmente (ou não) o valor.
+Com relação ao método de pagamento, este será o mesmo selecionado durante a cotação.
+Caso seja diferente, o responsável deve alterar manualmente, assim como as respectivas datas de vencimentos.
+
+A partir da versão 2.0.0, também foi adicionado às ordens de compra informações relacionadas ao faturamento/competências de cada ordem de compra.
+Logo, o responsável pela ordem de compra informa qual é o mês/ano de competência adicionando também o respectivo valor faturado, juntamente com o centro de custo associado, de forma que se facilite a identificação dos valores finais da ordem de compra.
+*Note que* uma ordem de compra pode possuir um valor total faturado do diferente do aprovado.
+Isto se dá pela volatividade encontrada nas compras (Ex: um fornecedor pode possuir uma quantidade menor do que a acordada durante o processo de cotação, ou até mesmo realizar o faturamento separadamente.
+Entre outros).
+
+Após a integração com o estoque, a situação dos itens de uma ordem de compra são atualizados de acordo com Webhooks recebidos ouriundos do recebimento dos materiais pelo estoquista.
+Entretanto, a finalização da ordem de compra continua sendo responsabilidade do responsável pela ordem de compra.
+
+Além do processo principal descrito acima, outros cadastros também estão presentes, entretanto, apenas para servir como campos parametrizados para os demais processos.
+
+Após a adição de Webhooks, ao salvar produto, categoria de um produto, unidade ou uma ordem de compra são emitidos Webhooks para a API do estoque, a qual utiliza estes dados para sincronizar informações.
+Quando uma nova entrada de estoque oriunda de uma ordem de compra é realizada, a API de estoque envia um webhook para a API de compras, sendo documentada na sessão Webhooks;
+
+=== Estrutura do projeto
+
+O projeto procura seguir o padrão de projeto MVC implementados por meio do Spring Framework.
+Dentro da pasta raiz, a aplicação está organizada em submódulos de acordo com sua relevância dentro da aplicação.
+Cada submódulo está organizado da seguinte maneira:
+
+- model: contém as classes de modelo da aplicação, representando a organização dos dados no banco de dados;
+
+- repository: contém as interfaces de operações do banco de dados.
+É utilizado o Spring Data.
+
+- adapter: contém das classes responsáveis por fazer a adaptação entre as interfaces recebidas pelos endpoints e os modelos internos da aplicação.
+
+- controller: contém as classes as quais possuem os métodos acionados ao receberem requisições HTTP. Além disso, as classes relacionadas as seguranças dos métodos (annotations), e os beans de request e response estão contidos nesta pasta.
+Considerações: os nomes "Projection" e "Response" estão associados aos beans de resposta das requisições.
+Por padrão, os beans chamados projections são apenas projeções, com dados simplificados comumente utilizados em respostas com arrays.
+Já os beans chamados response são os quais contém todas as informações sobre os registros.
+
+Toda a estrutura de configuração das bibliotecas utilizadas, segurança, entre outros, estão presentes no pacote config, organizadas de acordo com sua categoria.
+
+=== Requisições e Respostas
+
+O projeto busca seguir as especificações REST. Logo, HTTP status e verbos seguem os padrões HTTP, sendo 200 para sucesso, 201 para criado, 404 para não encontrado e assim sucessivamente.
+Ao final desta documentação, algumas requisições contendo erros são exemplificadas.
+
+=== Autenticação e Autorização
+
+O projeto é construído majoritariamente utilizando OAuth2 para a segurança.
+A autenticação é realizada através de uma consulta a API externa do Smartnet, e a autorização é realizada com base nas permissões do usuário na presente aplicação.
+Tal fluxo é transparente para o usuário final.
+
+Além disso, exite também Webhooks públicos por padrão os implementam lógica própria para validação/autenticação e autorização das operações relacionadas.
+Saiba mais na sessão de webhooks.
+
+==== Autenticação utilizando OAuth2
+
+Para os endpoints relacionados a OAuth2, a autenticação é realizada da seguinte forma:
+
+. Realize o login do usuário de acordo com o exemplo abaixo.
+
+.. *Requisição* include::{snippets}/authentication_docs/login/http-request.adoc[]
+include::{snippets}/authentication_docs/login/request-parameters.adoc[]
+
+[start=2]
+.. *Resposta* include::{snippets}/authentication_docs/login/http-response.adoc[]
+include::{snippets}/authentication_docs/login/response-fields.adoc[]
+
+NOTE QUE: O refresh token é retornado em um cookie.
+Logo, o próprio Browser do usuário gerencia o envio ou não.
+Além disso, é HTTP only.
+Caso o sistema esteja em HTTPS, é possível ainda habilitar este nível a mais de segurança (HTTPS Only).
+
+Após realizar o login, adicione o valor do *access_token* no cabeçalho de todas as requisições de acordo com a forma abaixo, substituindo o {access_token} pelo respectivo valor do access token obtido acima.
+
+    Authorization: Bearer {access_token}
+
+[start=2]
+. Uma vez que o access token expirar será necessário solicitar um novo access token.
+Este é concedido de acordo com o refresh token informado.
+Caso o refresh token seja válido, um novo access token será emitido.
+Caso contrário, o usuário deverá fazer um novo login.
+
+.. *Requisição* include::{snippets}/authentication_docs/refresh_token/http-request.adoc[]
+include::{snippets}/authentication_docs/refresh_token/request-parameters.adoc[]
+
+[start=2]
+.. *Resposta* include::{snippets}/authentication_docs/refresh_token/http-response.adoc[]
+include::{snippets}/authentication_docs/refresh_token/response-fields.adoc[]
+
+==== Autenticação utilizando Basic
+
+Este modelo de autenticação é aceito apenas em requisições cujo context path seja /basic.
+Este modelo destina-se à requisições somente Server-to-Server.
+
+*Requisição*
+include::{snippets}/authentication_docs/basic_authentication/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/authentication_docs/basic_authentication/http-response.adoc[]
+
+=== Notas aos desenvolvedores
+
+A parte textual desta documentação é gerada manualmente.
+Logo, todas as requisições e respostas, com os respectivos campos, estrutura, etc. são gerados automaticamente durante a etapa de execução dos testes automatizados, entretanto, a documentação textual é escrita manualmente.
+Caso seja encontrado erros de escrita ou até mesmo informações erradas, entre em contato com o responsável para a correção.
+
+== Endpoints
+
+=== Solicitação de Compra
+
+Endpoints relacionados ao módulo de solicitação de compras
+
+==== Insert
+
+Insere uma nova solicitação de compra
+
+*Requisição*
+include::{snippets}/purchase_request_test/insert/http-request.adoc[]
+include::{snippets}/purchase_request_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/insert/http-response.adoc[]
+include::{snippets}/purchase_request_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza uma solicitação de compra.
+
+*Requisição*
+include::{snippets}/purchase_request_test/update/http-request.adoc[]
+include::{snippets}/purchase_request_test/update/request-fields.adoc[]
+
+*Considerações*:
+
+. Como mencionado anteriormente, os produtos anteriores serão substituídos ou atualizados pelos produtos presentes nesta lista.
+Ou seja, as seguintes possibilidades são possiveis:
+
+* Um produto não estar presente na lista salva mas presente na lista a atualizar: o produto será adicionado;
+* Um produto estar presente na lista salva e presente na lista a atualizar: o produto será atualizado com os novos valores mantendo o id do relacionamento;
+* Um produto estar presente na lista salva porém não esta presente na lista a atualizar: o produto será removido da lista salva
+
+*Resposta*
+include::{snippets}/purchase_request_test/update/http-response.adoc[]
+include::{snippets}/purchase_request_test/update/response-fields.adoc[]
+
+==== Send Purchase Request To Approval
+
+Encaminha uma solicitação para aprovação.
+
+*Requisição*
+include::{snippets}/purchase_request_test/send_purchase_request_to_approval/http-request.adoc[]
+include::{snippets}/purchase_request_test/send_purchase_request_to_approval/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/send_purchase_request_to_approval/http-response.adoc[]
+include::{snippets}/purchase_request_test/send_purchase_request_to_approval/response-fields.adoc[]
+
+==== Cancel Purchase Request
+
+Cancela uma solicitação.
+
+*Requisição*
+include::{snippets}/purchase_request_test/cancel_purchase_request/http-request.adoc[]
+include::{snippets}/purchase_request_test/cancel_purchase_request/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/cancel_purchase_request/http-response.adoc[]
+include::{snippets}/purchase_request_test/cancel_purchase_request/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/purchase_request_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/find_all/http-response.adoc[]
+include::{snippets}/purchase_request_test/find_all/response-fields.adoc[]
+
+==== Find Items By Name
+
+Pesquisa todos os itens solicitados e retorna um array contendo as informações do item solicitado e as informações do último estágio do processo encontrado para tal item.
+
+*Requisição*
+include::{snippets}/purchase_request_test/find_items_by_name/http-request.adoc[]
+include::{snippets}/purchase_request_test/find_items_by_name/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/find_items_by_name/http-response.adoc[]
+include::{snippets}/purchase_request_test/find_items_by_name/response-fields.adoc[]
+
+==== Find By Status
+
+*Requisição*
+include::{snippets}/purchase_request_test/find_by_status/http-request.adoc[]
+include::{snippets}/purchase_request_test/find_by_status/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/find_by_status/http-response.adoc[]
+include::{snippets}/purchase_request_test/find_by_status/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+
+include::{snippets}/purchase_request_test/find_by_id/path-parameters.adoc[]
+include::{snippets}/purchase_request_test/find_by_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_request_test/find_by_id/http-response.adoc[]
+include::{snippets}/purchase_request_test/find_by_id/response-fields.adoc[]
+
+==== Get Purchase Request Report
+
+*Requisição*
+
+include::{snippets}/purchase_request_test/get_purchase_request_report/path-parameters.adoc[]
+include::{snippets}/purchase_request_test/get_purchase_request_report/http-request.adoc[]
+
+=== Aprovações de solicitações de compra
+
+Endpoints relacionados ao módulo de aprovações de solicitação de compras.
+Por convenção, as entidades chamadas apenas de aprovação (Approval, ApprovalItem e seus respectivos DTOs) estão relacionados a este módulo.
+
+As inserções de registros de aprovações são feitas de forma automática pela API no momento em que uma nova solicitação de compra é gerada, logo, apenas um Endpoint para atualizar os status está disponível.
+
+==== Evaluate Handler
+
+Avalia uma aprovação definindo um status para cada item da aprovação.
+Caso a aprovação já tenha sido finalizada, ou seja, esteja com o status "APPROVED" ou "REJECTED", uma mensagem de erro será retornada.
+
+*Requisição*
+include::{snippets}/approval_test/evaluate_handler/http-request.adoc[]
+include::{snippets}/approval_test/evaluate_handler/path-parameters.adoc[]
+include::{snippets}/approval_test/evaluate_handler/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/evaluate_handler/http-response.adoc[]
+include::{snippets}/approval_test/evaluate_handler/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/approval_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_all/http-response.adoc[]
+include::{snippets}/approval_test/find_all/response-fields.adoc[]
+
+==== Find Approvals Available To Quotation
+
+Pesquisa todas as aprovações disponíveis para realização de cotação.
+Inclui aprovações com status de: Aprovadas, Parcialmente Aprovadas, Parcialmente Rejeitadas e que não possuem uma cotação associada ou a cotação associada não é cancelada ou aprovada.
+
+*Requisição*
+include::{snippets}/approval_test/find_approvals_available_to_quotation/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_approvals_available_to_quotation/http-response.adoc[]
+include::{snippets}/approval_test/find_approvals_available_to_quotation/response-fields.adoc[]
+
+==== Find All Approval Items Available To Quotation
+
+Pesquisa todos os itens de aprovações disponíveis para realização de cotação.
+Inclui aprovações com status de: Aprovadas, Parcialmente Aprovadas, Parcialmente Rejeitadas e que não possuem uma cotação associada ou a cotação associada não é cancelada ou aprovada.
+
+Caso seja passado uma cotação como parâmetro, os itens relacionados a ela serão ignorados durante a pesquisa.
+
+*Requisição*
+include::{snippets}/approval_test/find_all_approval_items_available_to_quotation/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_all_approval_items_available_to_quotation/http-response.adoc[]
+include::{snippets}/approval_test/find_all_approval_items_available_to_quotation/response-fields.adoc[]
+
+==== Find Approved Items By Approval
+
+Pesquisa todos os itens disponíveis para cotação a partir de uma aprovação, os quais devem possuir:
+- Status Aprovado; - Não possuir uma cotação associada OU, caso possua uma cotação associada, será retornado apenas a quantidade pendente considerando a solicitação realizada.
+Caso contrário, o item será ignorado
+
+*Requisição*
+include::{snippets}/approval_test/find_approved_items_by_approval/http-request.adoc[]
+include::{snippets}/approval_test/find_approved_items_by_approval/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_approved_items_by_approval/http-response.adoc[]
+include::{snippets}/approval_test/find_approved_items_by_approval/response-fields.adoc[]
+
+==== Find By Status
+
+Retorna todas as aprovações as quais possuem algum dos status contidos no array a ser filtrado.
+
+*Requisição*
+include::{snippets}/approval_test/find_by_status/http-request.adoc[]
+include::{snippets}/approval_test/find_by_status/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_by_status/http-response.adoc[]
+include::{snippets}/approval_test/find_by_status/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+
+include::{snippets}/approval_test/find_by_id/path-parameters.adoc[]
+include::{snippets}/approval_test/find_by_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_by_id/http-response.adoc[]
+include::{snippets}/approval_test/find_by_id/response-fields.adoc[]
+
+==== Find With Approval And Available Units By Id
+
+*Requisição*
+
+include::{snippets}/approval_test/find_with_approval_and_available_units_by_id/path-parameters.adoc[]
+include::{snippets}/approval_test/find_with_approval_and_available_units_by_id/http-request.adoc[]
+include::{snippets}/approval_test/find_with_approval_and_available_units_by_id/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_with_approval_and_available_units_by_id/http-response.adoc[]
+include::{snippets}/approval_test/find_with_approval_and_available_units_by_id/response-fields.adoc[]
+
+==== Find By Item Id
+
+*Requisição*
+
+include::{snippets}/approval_test/find_by_item_id/path-parameters.adoc[]
+include::{snippets}/approval_test/find_by_item_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/find_by_item_id/http-response.adoc[]
+include::{snippets}/approval_test/find_by_item_id/response-fields.adoc[]
+
+==== Mark Item As Discarded
+
+Este endpoint tem como objetivo marcar itens como descartados, mesmo após ser aprovado.
+Desta forma, este não será mais exibido em pesquisas de "itens disponíveis para cotações".
+Cotações já realizadas não serão afetadas.
+
+*Requisição*
+
+include::{snippets}/approval_test/mark_item_as_discarded/path-parameters.adoc[]
+include::{snippets}/approval_test/mark_item_as_discarded/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/approval_test/mark_item_as_discarded/http-response.adoc[]
+include::{snippets}/approval_test/mark_item_as_discarded/response-fields.adoc[]
+
+=== Cotações
+
+Endpoints relacionados ao módulo de cotações
+
+==== Insert
+
+Insere uma nova solicitação de compra.
+O responsável pela cotação é obtido através do usuário logado.
+
+*Requisição*
+include::{snippets}/quotation_test/insert/http-request.adoc[]
+include::{snippets}/quotation_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/insert/http-response.adoc[]
+include::{snippets}/quotation_test/insert/response-fields.adoc[]
+
+==== Quote Handle
+
+Realiza uma cotação ou atualiza uma cotação já existente.
+
+*Requisição*
+include::{snippets}/quotation_test/quote_handle/http-request.adoc[]
+include::{snippets}/quotation_test/quote_handle/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/quote_handle/http-response.adoc[]
+include::{snippets}/quotation_test/quote_handle/response-fields.adoc[]
+
+*Considerações*:
+
+. Os produtos anteriores serão substituídos ou atualizados pelos produtos presentes na lista de itens.
+Ou seja, as seguintes possibilidades são possiveis:
+
+* Um produto não estar presente na lista salva mas presente na lista a atualizar: o produto será adicionado;
+* Um produto estar presente na lista salva e presente na lista a atualizar: o produto será atualizado com os novos valores mantendo o id do relacionamento;
+* Um produto estar presente na lista salva porém não esta presente na lista a atualizar: o produto será removido da lista salva;
+
+. O relacionamento entre um item cotado e os fornecedores se comportam de forma análoga aos produtos (tópico 1).
+
+. Para cada produto, um fornecedor deve ser selecionado.
+Este definirá o preço final do item cotado.
+
+==== Mark Quotation As Finalized
+
+Encaminha uma cotação para aprovação.
+
+    Caso o valor total da cotação seja menor ou igual ao valor definido como limite permitido, a ordem de compra será aprovada automaticamente, assumindo o responsável pela aprovação como sendo o mesmo usuário responsável pela cotação.
+
+*Requisição*
+include::{snippets}/quotation_test/mark_quotation_as_finalized/http-request.adoc[]
+include::{snippets}/quotation_test/mark_quotation_as_finalized/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/mark_quotation_as_finalized/http-response.adoc[]
+include::{snippets}/quotation_test/mark_quotation_as_finalized/response-fields.adoc[]
+
+==== Cancel Quotation By Id
+
+Cancela uma cotação.
+
+*Requisição*
+include::{snippets}/quotation_test/cancel_quotation_by_id/http-request.adoc[]
+include::{snippets}/quotation_test/cancel_quotation_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/cancel_quotation_by_id/http-response.adoc[]
+include::{snippets}/quotation_test/cancel_quotation_by_id/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/quotation_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/find_all/http-response.adoc[]
+include::{snippets}/quotation_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+
+include::{snippets}/quotation_test/find_by_id/path-parameters.adoc[]
+include::{snippets}/quotation_test/find_by_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/find_by_id/http-response.adoc[]
+include::{snippets}/quotation_test/find_by_id/response-fields.adoc[]
+
+==== Find With Available Units By Id
+
+*Requisição*
+
+include::{snippets}/quotation_test/find_with_available_units_by_id/path-parameters.adoc[]
+include::{snippets}/quotation_test/find_with_available_units_by_id/http-request.adoc[]
+include::{snippets}/quotation_test/find_with_available_units_by_id/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/find_with_available_units_by_id/http-response.adoc[]
+include::{snippets}/quotation_test/find_with_available_units_by_id/response-fields.adoc[]
+
+==== Find Suppliers By Quotation
+
+*Requisição*
+
+include::{snippets}/quotation_test/find_suppliers_by_quotation/path-parameters.adoc[]
+include::{snippets}/quotation_test/find_suppliers_by_quotation/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/find_suppliers_by_quotation/http-response.adoc[]
+include::{snippets}/quotation_test/find_suppliers_by_quotation/response-fields.adoc[]
+
+==== Find Last By Supplier And Product
+
+Dado um fornecedor e um produto, retorna os dados da última cotação salva do respectivo item, caso exista.
+
+*Requisição*
+
+include::{snippets}/quotation_test/find_last_by_supplier_and_product/path-parameters.adoc[]
+include::{snippets}/quotation_test/find_last_by_supplier_and_product/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/find_last_by_supplier_and_product/http-response.adoc[]
+include::{snippets}/quotation_test/find_last_by_supplier_and_product/response-fields.adoc[]
+
+==== Find Items By Name
+
+*Requisição*
+include::{snippets}/quotation_test/find_items_by_name/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_test/find_items_by_name/http-response.adoc[]
+include::{snippets}/quotation_test/find_items_by_name/response-fields.adoc[]
+
+==== Get Quotation Report
+
+Dado uma cotação e um fornecedor (fornecedor é opcional), retorna um relatório em formato PDF.
+Caso o fornecedor seja informado, o PDF conterá apenas os itens cotados para aquele fornecedor.
+Caso contrário, o PDF conterá todos os itens da respectiva cotação, caso encontrada.
+
+*Requisição*
+
+include::{snippets}/quotation_test/get_quotation_report/path-parameters.adoc[]
+include::{snippets}/quotation_test/get_quotation_report/request-parameters.adoc[]
+include::{snippets}/quotation_test/get_quotation_report/http-request.adoc[]
+
+==== Send Email With Quotation
+
+Dado uma cotação e um fornecedor, envia um email contendo o relátorio com os itens cotados para este cotador.
+O email é enviado de forma assíncrona, logo, a resposta HTTP 204 é apenas um indicativo de que a API recebeu o pedido de envio e então enviou, não sendo garantido a sua entrega ao destinatário.
+
+    Nota: Esta função pode atualizar o email do fornecedor.
+
+*Requisição*
+
+include::{snippets}/quotation_test/send_email_with_quotation/path-parameters.adoc[]
+include::{snippets}/quotation_test/send_email_with_quotation/request-body.adoc[]
+include::{snippets}/quotation_test/send_email_with_quotation/http-request.adoc[]
+
+*Resposta*
+
+include::{snippets}/quotation_test/send_email_with_quotation/http-response.adoc[]
+
+=== Aprovações de cotações de compra
+
+Endpoints relacionados ao módulo de aprovações de cotações de compras.
+
+As inserções de registros de aprovações são feitas de forma automática pela API no momento em que uma nova cotação de compra é gerada.
+Entretanto, há um endpoint disponível para a inserção manual.
+
+==== Insert
+
+Insere uma nova aprovação de cotação manualmente.
+
+*Requisição*
+include::{snippets}/quotation_approval_test/insert/http-request.adoc[]
+include::{snippets}/quotation_approval_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_approval_test/insert/http-response.adoc[]
+include::{snippets}/quotation_approval_test/insert/response-fields.adoc[]
+
+==== Evaluate Handler
+
+Avalia uma cotação apenas como aprovada ou rejeitada.
+Caso a aprovação já tenha sido finalizada, ou seja, esteja com o status "APPROVED" ou "REJECTED", uma mensagem de erro será retornada.
+
+*Requisição*
+include::{snippets}/quotation_approval_test/evaluate_handler/http-request.adoc[]
+include::{snippets}/quotation_approval_test/evaluate_handler/path-parameters.adoc[]
+include::{snippets}/quotation_approval_test/evaluate_handler/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_approval_test/evaluate_handler/http-response.adoc[]
+include::{snippets}/quotation_approval_test/evaluate_handler/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/quotation_approval_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_approval_test/find_all/http-response.adoc[]
+include::{snippets}/quotation_approval_test/find_all/response-fields.adoc[]
+
+==== Find All Without Quotation
+
+Endpoint criado possui a mesma finalizade do método "Find All", entretanto, tem como finalidade ser otimizado tendo em vista que retorna menos campos.
+*O campo de cotação passa a ser apenas o código da cotação, ao invés de uma projeção*."
+
+*Requisição*
+include::{snippets}/quotation_approval_test/find_all_without_quotation/http-request.adoc[]
+include::{snippets}/quotation_approval_test/find_all_without_quotation/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_approval_test/find_all_without_quotation/http-response.adoc[]
+include::{snippets}/quotation_approval_test/find_all_without_quotation/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+
+include::{snippets}/quotation_approval_test/find_by_id/path-parameters.adoc[]
+include::{snippets}/quotation_approval_test/find_by_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_approval_test/find_by_id/http-response.adoc[]
+include::{snippets}/quotation_approval_test/find_by_id/response-fields.adoc[]
+
+==== Find By Id With Trace
+
+*Requisição*
+
+include::{snippets}/quotation_approval_test/find_by_id_with_trace/path-parameters.adoc[]
+include::{snippets}/quotation_approval_test/find_by_id_with_trace/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/quotation_approval_test/find_by_id_with_trace/http-response.adoc[]
+include::{snippets}/quotation_approval_test/find_by_id_with_trace/response-fields.adoc[]
+
+=== Ordens de compra
+
+Endpoints relacionados ao módulo de ordens de compras.
+Os registros são gerados automaticamente no momento em que uma aprovação de cotação é concluída e a cotação aprovada.
+
+==== Update
+
+Atualiza uma ordem de compra manualmente.
+Permite alterar apenas informações relacionadas à condição de pagamento, frete, situação e observação.
+
+*Requisição*
+include::{snippets}/purchase_order_test/update/http-request.adoc[]
+include::{snippets}/purchase_order_test/update/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/update/http-response.adoc[]
+include::{snippets}/purchase_order_test/update/response-fields.adoc[]
+
+==== Update Purchase Order Competencies
+
+Atualiza uma ordem de compra manualmente.
+Permite alterar apenas as competências, situação e observações.
+
+    Note que: devido ao processo, somente os status de PARCIALMENTE RECEBIDO, RECEBIDO E FINALIZADO são válidos para este estágio.
+
+*Requisição*
+include::{snippets}/purchase_order_test/update_purchase_order_competencies/http-request.adoc[]
+include::{snippets}/purchase_order_test/update_purchase_order_competencies/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/update_purchase_order_competencies/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/update_purchase_order_competencies/http-response.adoc[]
+include::{snippets}/purchase_order_test/update_purchase_order_competencies/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/purchase_order_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all/response-fields.adoc[]
+
+==== Find All Without Approval
+
+Endpoint tem o mesmo objetivo do método "Find All", entretanto, *este retorna apenas o ID da aprovação*, diferentemente do método "Find All".
+Logo, este método tende a ser mais otimizado, com menor tempo de resposta, de forma a melhorar a experiência do usuário final em uma tela de listagem de todas as ordens de compra.
+
+*Requisição*
+include::{snippets}/purchase_order_test/find_all_without_approval/http-request.adoc[]
+include::{snippets}/purchase_order_test/find_all_without_approval/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_without_approval/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_without_approval/response-fields.adoc[]
+
+==== Find All With Quotation
+
+*Requisição*
+include::{snippets}/purchase_order_test/find_all_with_quotation/http-request.adoc[]
+include::{snippets}/purchase_order_test/find_all_with_quotation/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_with_quotation/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_with_quotation/response-fields.adoc[]
+
+==== Find All With Quotation And Competencies
+
+*Requisição*
+include::{snippets}/purchase_order_test/find_all_with_quotation_and_competencies/http-request.adoc[]
+include::{snippets}/purchase_order_test/find_all_with_quotation_and_competencies/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_with_quotation_and_competencies/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_with_quotation_and_competencies/response-fields.adoc[]
+
+==== Find All By Advanced Queries
+
+Este endpoint foi desenvolvido de forma a fornecer uma maior flexibilidade aos clientes durante a pesquisa.
+Devido a isso, possui uma sintaxe diferente de forma a suportar diversas operações.
+
+    Sintaxe: search={nome do campo}{operador}{valor do filtro}
+
+===== Operadores
+
+* *:* Para comparações de forma igual;
+* *<* Para comparações de menor ou igual a;
+* *>* Para comparações de maior ou igual a;
+* *~* Para operações de string, de forma a pesquisar considerando as estratégias de *contains e case insensitive*;
+
+*Operações permitidas*
+
+* { id }{ : }{ qualquer número } -> filtra pelo código da ordem de compra
+
+* { quotationApproval }{ : }{ qualquer número } -> filtra pelo código da aprovação de ordem de compra
+
+* { quotation }{ : }{ qualquer número } -> filtra pelo código da cotação
+
+* { description }{ ~ }{ qualquer string } -> filtra pela descrição da cotação a qual originou a ordem de compra
+
+* { responsible }{ ~ }{ qualquer string } -> filtra pelo responsável pela ordem de compra
+
+* { supplier }{ ~ }{ qualquer string } -> filtra pelo nome do fornecedor
+
+* { branchOffice }{ ~ }{ qualquer string } -> filtra pelo nome da filial
+
+* { project }{ ~ }{ qualquer string } -> filtra pelo nome do projeto
+
+* { location }{ ~ }{ qualquer string } -> filtra pelo nome da localização associada a ordem de compra
+
+* { createdDate }{ > | < }{ qualquer data no formato 'YYYY-MM-DD'' } -> filtra por um intervalo da data de criação da ordem de compra
+
+* { lastModifiedDate }{ > | < }{ qualquer data no formato 'YYYY-MM-DD'' } -> filtra por um intervalo da data da última atualização da ordem de compra.
+
+* { status }{ : }{ qualquer constante de status válida } -> filtra pelo status da movimentação
+
+* { competence }{ : }{ qualquer número } -> filtra pelas competências das ordens de compra
+
+* { costCenter }{ ~ }{ qualquer string } -> filtra pelo nome do centro de custo
+
+
+*Requisição*
+include::{snippets}/purchase_order_test/find_all_by_advanced_queries/http-request.adoc[]
+include::{snippets}/purchase_order_test/find_all_by_advanced_queries/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_by_advanced_queries/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_by_advanced_queries/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/find_by_id/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/find_by_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_by_id/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_by_id/response-fields.adoc[]
+
+==== Find By Id Filtering Pending Items
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/find_by_id/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/find_by_id/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_by_id/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_by_id/response-fields.adoc[]
+
+==== Find Last By Product
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/find_last_by_product/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/find_last_by_product/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_last_by_product/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_last_by_product/response-fields.adoc[]
+
+==== Find All Last Items By Quotation Approval
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/find_all_last_items_by_quotation_approval/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/find_all_last_items_by_quotation_approval/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_last_items_by_quotation_approval/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_last_items_by_quotation_approval/response-fields.adoc[]
+
+==== Find All Last Purchase By Products
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/find_all_last_purchase_by_products/request-parameters.adoc[]
+include::{snippets}/purchase_order_test/find_all_last_purchase_by_products/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_last_purchase_by_products/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_last_purchase_by_products/response-fields.adoc[]
+
+==== Find All Items
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/find_all_items/request-parameters.adoc[]
+include::{snippets}/purchase_order_test/find_all_items/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/purchase_order_test/find_all_items/http-response.adoc[]
+include::{snippets}/purchase_order_test/find_all_items/response-fields.adoc[]
+
+==== Get Purchase Order Report
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/get_purchase_order_report/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/get_purchase_order_report/http-request.adoc[]
+
+==== Get Purchase Orders List By Competence Report
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/get_purchase_orders_list_by_competence_report/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/get_purchase_orders_list_by_competence_report/http-request.adoc[]
+
+==== Get Purchase Orders List By Competence And Cost Center Report
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/get_purchase_orders_list_by_competence_and_cost_center_report/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/get_purchase_orders_list_by_competence_and_cost_center_report/http-request.adoc[]
+
+==== Get Purchase Orders By Supplier Report
+
+*Requisição*
+
+include::{snippets}/purchase_order_test/get_purchase_orders_by_supplier_report/path-parameters.adoc[]
+include::{snippets}/purchase_order_test/get_purchase_orders_by_supplier_report/request-parameters.adoc[]
+include::{snippets}/purchase_order_test/get_purchase_orders_by_supplier_report/http-request.adoc[]
+
+=== Fornecedores
+
+Endpoints relacionados ao módulo de fornecedores
+
+==== Insert
+
+Insere um novo fornecedor
+
+*Requisição*
+include::{snippets}/suppliers_test/insert/http-request.adoc[]
+include::{snippets}/suppliers_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/suppliers_test/insert/http-response.adoc[]
+include::{snippets}/suppliers_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza um fornecedor de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/suppliers_test/update/http-request.adoc[]
+include::{snippets}/suppliers_test/update/path-parameters.adoc[]
+include::{snippets}/suppliers_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/suppliers_test/update/http-response.adoc[]
+include::{snippets}/suppliers_test/update/response-fields.adoc[]
+
+==== Find By Name
+
+Pesquisa todos os fornecedores cujo nome contém a string passada como parâmetro
+
+*Requisição*
+include::{snippets}/suppliers_test/find_by_name/http-request.adoc[]
+include::{snippets}/suppliers_test/find_by_name/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/suppliers_test/find_by_name/http-response.adoc[]
+include::{snippets}/suppliers_test/find_by_name/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id.
+
+*Requisição*
+include::{snippets}/suppliers_test/find_by_id/http-request.adoc[]
+include::{snippets}/suppliers_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/suppliers_test/find_by_id/http-response.adoc[]
+include::{snippets}/suppliers_test/find_by_id/response-fields.adoc[]
+
+==== Find By Name With CPF And CNPJ
+
+*Requisição*
+include::{snippets}/suppliers_test/find_by_name_with_c_p_f_and_c_n_p_j/http-request.adoc[]
+include::{snippets}/suppliers_test/find_by_name_with_c_p_f_and_c_n_p_j/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/suppliers_test/find_by_name_with_c_p_f_and_c_n_p_j/http-response.adoc[]
+include::{snippets}/suppliers_test/find_by_name_with_c_p_f_and_c_n_p_j/response-fields.adoc[]
+
+=== Impostos
+
+Endpoints relacionados aos impostos cadastrados referentes aos fornecedores
+
+==== Update
+
+Atualiza um imposto de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/taxes_tests/update/http-request.adoc[]
+include::{snippets}/taxes_tests/update/path-parameters.adoc[]
+include::{snippets}/taxes_tests/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/taxes_tests/update/http-response.adoc[]
+include::{snippets}/taxes_tests/update/response-fields.adoc[]
+
+==== Find All
+
+Pesquisa todos os impostos
+
+*Requisição*
+include::{snippets}/taxes_tests/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/taxes_tests/find_all/http-response.adoc[]
+include::{snippets}/taxes_tests/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id.
+
+*Requisição*
+include::{snippets}/taxes_tests/find_by_id/http-request.adoc[]
+include::{snippets}/taxes_tests/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/taxes_tests/find_by_id/http-response.adoc[]
+include::{snippets}/taxes_tests/find_by_id/response-fields.adoc[]
+
+=== Produtos
+
+Endpoints relacionados ao módulo de produtos.
+Sessões cujo título possua "BASIC" referem-se ao modelo de autenticação BASIC para que seja realizado a ação.
+
+==== Insert
+
+Insere um novo produto
+
+*Requisição*
+include::{snippets}/products_test/insert/http-request.adoc[]
+include::{snippets}/products_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/insert/http-response.adoc[]
+include::{snippets}/products_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza um produto de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/products_test/update/http-request.adoc[]
+include::{snippets}/products_test/update/path-parameters.adoc[]
+include::{snippets}/products_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/update/http-response.adoc[]
+include::{snippets}/products_test/update/response-fields.adoc[]
+
+==== Find By Name Containing
+
+Pesquisa todos os produtos cujo nome contém a string passada pelos parâmetros
+
+*Requisição*
+include::{snippets}/products_test/find_by_name_containing/http-request.adoc[]
+include::{snippets}/products_test/find_by_name_containing/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_by_name_containing/http-response.adoc[]
+include::{snippets}/products_test/find_by_name_containing/response-fields.adoc[]
+
+==== Find By Name And Code Containing
+
+Pesquisa todos os produtos cujo nome e código contêm a string passada nos parâmetros
+
+*Requisição*
+include::{snippets}/products_test/find_by_name_and_code_containing/http-request.adoc[]
+include::{snippets}/products_test/find_by_name_and_code_containing/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_by_name_and_code_containing/http-response.adoc[]
+include::{snippets}/products_test/find_by_name_and_code_containing/response-fields.adoc[]
+
+==== Find By Code Containing
+
+Pesquisa todos os produtos cujo código do produto contém a string passada pelos parâmetros
+
+*Requisição*
+include::{snippets}/products_test/find_by_code_containing/http-request.adoc[]
+include::{snippets}/products_test/find_by_code_containing/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_by_code_containing/http-response.adoc[]
+include::{snippets}/products_test/find_by_code_containing/response-fields.adoc[]
+
+==== Find Product With Units By Name
+
+Pesquisa todos os produtos cujo nome contém a string passada pelos parâmetros, juntamente com todas as unidades possíveis para os respectivos produtos
+
+*Requisição*
+include::{snippets}/products_test/find_product_with_units_by_name/http-request.adoc[]
+include::{snippets}/products_test/find_product_with_units_by_name/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_product_with_units_by_name/http-response.adoc[]
+include::{snippets}/products_test/find_product_with_units_by_name/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/products_test/find_by_id/http-request.adoc[]
+include::{snippets}/products_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_by_id/http-response.adoc[]
+include::{snippets}/products_test/find_by_id/response-fields.adoc[]
+
+==== Find By Code
+
+Pesquisa o registro pelo código do produto, como o código serial por exemplo
+
+*Requisição*
+include::{snippets}/products_test/find_by_code/http-request.adoc[]
+include::{snippets}/products_test/find_by_code/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_by_code/http-response.adoc[]
+include::{snippets}/products_test/find_by_code/response-fields.adoc[]
+
+==== Find By Code With Units
+
+Pesquisa o registro pelo código do produto juntamente com todas as unidades possíveis
+
+*Requisição*
+include::{snippets}/products_test/find_product_with_units_by_code/http-request.adoc[]
+include::{snippets}/products_test/find_product_with_units_by_code/path-parameters.adoc[]
+include::{snippets}/products_test/find_product_with_units_by_code/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/find_product_with_units_by_code/http-response.adoc[]
+include::{snippets}/products_test/find_product_with_units_by_code/response-fields.adoc[]
+
+==== Generate By Category
+
+Gera o próximo código de um produto dado a sua categoria inicial.
+
+*Requisição*
+include::{snippets}/products_test/generate_by_category/http-request.adoc[]
+include::{snippets}/products_test/generate_by_category/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/generate_by_category/http-response.adoc[]
+include::{snippets}/products_test/generate_by_category/response-fields.adoc[]
+
+==== Insert - BASIC
+
+Insere um novo produto
+
+*Requisição*
+include::{snippets}/products_test/basic_insert/http-request.adoc[]
+include::{snippets}/products_test/basic_insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/basic_insert/http-response.adoc[]
+include::{snippets}/products_test/basic_insert/response-fields.adoc[]
+
+==== Update - BASIC
+
+Atualiza um produto de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/products_test/basic_update/http-request.adoc[]
+include::{snippets}/products_test/basic_update/path-parameters.adoc[]
+include::{snippets}/products_test/basic_update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/basic_update/http-response.adoc[]
+include::{snippets}/products_test/basic_update/response-fields.adoc[]
+
+==== Generate By Category - Basic
+
+Gera o próximo código de um produto dado a sua categoria inicial.
+Este destina-se ao modelo de autenticação BASIC.
+
+*Requisição*
+include::{snippets}/products_test/basic_generate_by_category/http-request.adoc[]
+include::{snippets}/products_test/basic_generate_by_category/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/products_test/basic_generate_by_category/http-response.adoc[]
+include::{snippets}/products_test/basic_generate_by_category/response-fields.adoc[]
+
+=== Categorias de Produtos
+
+Endpoints relacionados ao cadastro de categorias de produtos, tornando-a campo parametrizado
+
+==== Insert
+
+Insere uma nova categoria
+
+*Requisição*
+include::{snippets}/product_category_test/insert/http-request.adoc[]
+include::{snippets}/product_category_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/product_category_test/insert/http-response.adoc[]
+include::{snippets}/product_category_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza uma categoria de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/product_category_test/update/http-request.adoc[]
+include::{snippets}/product_category_test/update/path-parameters.adoc[]
+include::{snippets}/product_category_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/product_category_test/update/http-response.adoc[]
+include::{snippets}/product_category_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/product_category_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/product_category_test/find_all/http-response.adoc[]
+include::{snippets}/product_category_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/product_category_test/find_by_id/http-request.adoc[]
+include::{snippets}/product_category_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/product_category_test/find_by_id/http-response.adoc[]
+include::{snippets}/product_category_test/find_by_id/response-fields.adoc[]
+
+=== Unidades
+
+Endpoints relacionados ao módulo de unidades.
+
+Nota: o campo chamado "conversion" refere-se ao fator de conversão.
+Logo, para se converter da unidade A para B, deve se multiplicar a quantidade pelo fator de conversão.
+Exemplo:
+
+* m para cm: o fator de conversão deverá ser 100. Logo, para se converter 2m para cm, deve se realizar o cálculo:
+
+    2 (quantidade) x 100 (fator de conversão) = 200 (quantidade na respectiva unidade final)
+
+==== Insert
+
+Insere uma nova unidade
+
+*Requisição*
+include::{snippets}/units_test/insert/http-request.adoc[]
+include::{snippets}/units_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/units_test/insert/http-response.adoc[]
+include::{snippets}/units_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza uma unidade de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/units_test/update/http-request.adoc[]
+include::{snippets}/units_test/update/path-parameters.adoc[]
+include::{snippets}/units_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/units_test/update/http-response.adoc[]
+include::{snippets}/units_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/units_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/units_test/find_all/http-response.adoc[]
+include::{snippets}/units_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/units_test/find_by_id/http-request.adoc[]
+include::{snippets}/units_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/units_test/find_by_id/http-response.adoc[]
+include::{snippets}/units_test/find_by_id/response-fields.adoc[]
+
+=== Centro de custos
+
+Endpoints relacionados ao módulo de centro de custos.
+
+==== Insert
+
+Insere um novo centro de custo
+
+*Requisição*
+include::{snippets}/cost_centers_test/insert/http-request.adoc[]
+include::{snippets}/cost_centers_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/cost_centers_test/insert/http-response.adoc[]
+include::{snippets}/cost_centers_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza um centro de custo de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/cost_centers_test/update/http-request.adoc[]
+include::{snippets}/cost_centers_test/update/path-parameters.adoc[]
+include::{snippets}/cost_centers_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/cost_centers_test/update/http-response.adoc[]
+include::{snippets}/cost_centers_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/cost_centers_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/cost_centers_test/find_all/http-response.adoc[]
+include::{snippets}/cost_centers_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/cost_centers_test/find_by_id/http-request.adoc[]
+include::{snippets}/cost_centers_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/cost_centers_test/find_by_id/http-response.adoc[]
+include::{snippets}/cost_centers_test/find_by_id/response-fields.adoc[]
+
+=== Endereços de entrega
+
+Endpoints relacionados ao módulo de endereço de entregas.
+Será utilizado apenas para salvar informações sobre os endereços, não sendo relacionados diretamente com nenhuma outra entidade.
+
+==== Insert
+
+Insere um novo endereço
+
+*Requisição*
+include::{snippets}/delivery_addresses_test/insert/http-request.adoc[]
+include::{snippets}/delivery_addresses_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/delivery_addresses_test/insert/http-response.adoc[]
+include::{snippets}/delivery_addresses_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza um endereço de entrega de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/delivery_addresses_test/update/http-request.adoc[]
+include::{snippets}/delivery_addresses_test/update/path-parameters.adoc[]
+include::{snippets}/delivery_addresses_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/delivery_addresses_test/update/http-response.adoc[]
+include::{snippets}/delivery_addresses_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/delivery_addresses_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/delivery_addresses_test/find_all/http-response.adoc[]
+include::{snippets}/delivery_addresses_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/delivery_addresses_test/find_by_id/http-request.adoc[]
+include::{snippets}/delivery_addresses_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/delivery_addresses_test/find_by_id/http-response.adoc[]
+include::{snippets}/delivery_addresses_test/find_by_id/response-fields.adoc[]
+
+=== Condições de pagamento
+
+Endpoints relacionados ao módulo de condições de pagamento disponíveis para as cotações.
+
+==== Insert
+
+Insere um nova condição de pagamento
+
+*Requisição*
+include::{snippets}/payment_conditions_test/insert/http-request.adoc[]
+include::{snippets}/payment_conditions_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/payment_conditions_test/insert/http-response.adoc[]
+include::{snippets}/payment_conditions_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza uma condição de pagamento de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/payment_conditions_test/update/http-request.adoc[]
+include::{snippets}/payment_conditions_test/update/path-parameters.adoc[]
+include::{snippets}/payment_conditions_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/payment_conditions_test/update/http-response.adoc[]
+include::{snippets}/payment_conditions_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/payment_conditions_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/payment_conditions_test/find_all/http-response.adoc[]
+include::{snippets}/payment_conditions_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/payment_conditions_test/find_by_id/http-request.adoc[]
+include::{snippets}/payment_conditions_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/payment_conditions_test/find_by_id/http-response.adoc[]
+include::{snippets}/payment_conditions_test/find_by_id/response-fields.adoc[]
+
+=== Filiais
+
+Endpoints relacionados ao módulo de filiais.
+
+==== Insert
+
+Insere um nova filial.
+
+*Requisição*
+include::{snippets}/branch_office_test/insert/http-request.adoc[]
+include::{snippets}/branch_office_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/branch_office_test/insert/http-response.adoc[]
+include::{snippets}/branch_office_test/insert/response-fields.adoc[]
+
+==== Update
+
+Atualiza uma filial de acordo com o ID passado na URL
+
+*Requisição*
+include::{snippets}/branch_office_test/update/http-request.adoc[]
+include::{snippets}/branch_office_test/update/path-parameters.adoc[]
+include::{snippets}/branch_office_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/branch_office_test/update/http-response.adoc[]
+include::{snippets}/branch_office_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/branch_office_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/branch_office_test/find_all/http-response.adoc[]
+include::{snippets}/branch_office_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/branch_office_test/find_by_id/http-request.adoc[]
+include::{snippets}/branch_office_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/branch_office_test/find_by_id/http-response.adoc[]
+include::{snippets}/branch_office_test/find_by_id/response-fields.adoc[]
+
+=== Locais
+
+Endpoints relacionados ao módulo de locais.
+Trata-se inicialmente de um cadastro apenas para servir como filtro posteriormente.
+Foi projetado para armazenar informações de localizações tais como lojas, galpões, a fim de direcionar cotações/ordens de compra.
+
+    Permite ao responsável responder a seguinte pergunta: "O que foi gasto com a Loja X durante o período A até B? E com a loja Y?"
+
+==== Insert
+
+*Requisição*
+include::{snippets}/locations_test/insert/http-request.adoc[]
+include::{snippets}/locations_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/locations_test/insert/http-response.adoc[]
+include::{snippets}/locations_test/insert/response-fields.adoc[]
+
+==== Update
+
+*Requisição*
+include::{snippets}/locations_test/update/http-request.adoc[]
+include::{snippets}/locations_test/update/path-parameters.adoc[]
+include::{snippets}/locations_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/locations_test/update/http-response.adoc[]
+include::{snippets}/locations_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/locations_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/locations_test/find_all/http-response.adoc[]
+include::{snippets}/locations_test/find_all/response-fields.adoc[]
+
+==== Find By Branch Office
+
+*Requisição*
+include::{snippets}/locations_test/find_by_branch_office/http-request.adoc[]
+include::{snippets}/locations_test/find_by_branch_office/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/locations_test/find_by_branch_office/http-response.adoc[]
+include::{snippets}/locations_test/find_by_branch_office/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+include::{snippets}/locations_test/find_by_id/http-request.adoc[]
+include::{snippets}/locations_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/locations_test/find_by_id/http-response.adoc[]
+include::{snippets}/locations_test/find_by_id/response-fields.adoc[]
+
+=== Projetos
+
+Endpoints relacionados ao módulo de projetos.
+Trata-se inicialmente de um cadastro apenas para servir como filtro posteriormente.
+Foi projetado para organizar várias ordens de compra de acordo com um mesmo projeto.
+Exemplo: diversas ordens de compra, de fornecedores diferentes para atender as demandas da implantação de um novo serviço.
+
+    Permite ao responsável responder a seguinte pergunta: "O que foi gasto com a expansão do Data Center X? O que foi gasto com a reforma da loja Y?"
+
+Note que: pode e deve ser trabalhar em conjunto com o módulo de Locais, embora isto não seja obrigatório.
+Desta forma, é possível entender melhor o direcionamento dos gastos.
+
+==== Insert
+
+*Requisição*
+include::{snippets}/projects_test/insert/http-request.adoc[]
+include::{snippets}/projects_test/insert/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/projects_test/insert/http-response.adoc[]
+include::{snippets}/projects_test/insert/response-fields.adoc[]
+
+==== Update
+
+*Requisição*
+include::{snippets}/projects_test/update/http-request.adoc[]
+include::{snippets}/projects_test/update/path-parameters.adoc[]
+include::{snippets}/projects_test/update/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/projects_test/update/http-response.adoc[]
+include::{snippets}/projects_test/update/response-fields.adoc[]
+
+==== Find All
+
+*Requisição*
+include::{snippets}/projects_test/find_all/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/projects_test/find_all/http-response.adoc[]
+include::{snippets}/projects_test/find_all/response-fields.adoc[]
+
+==== Find By Id
+
+*Requisição*
+include::{snippets}/projects_test/find_by_id/http-request.adoc[]
+include::{snippets}/projects_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/projects_test/find_by_id/http-response.adoc[]
+include::{snippets}/projects_test/find_by_id/response-fields.adoc[]
+
+=== Dashboard
+
+Esta sessão refere-se ao módulo de dashboard.
+Este consiste apenas em um endpoint o qual retorna dados predefinidos para fins de gerência.
+
+Note que as ordens de compra são filtradas pelas respectivas *datas de competências* e não pela data de criação.
+Logo, os totais associados são referente aos *totais informados nas competências* e não o valor total da ordem de compra.
+
+==== Get Data
+
+Retorna os dados do dashboard a partir de um intervalo de datas.
+
+*Requisição*
+include::{snippets}/dashboard_test/get_data/http-request.adoc[]
+include::{snippets}/dashboard_test/get_data/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/dashboard_test/get_data/http-response.adoc[]
+include::{snippets}/dashboard_test/get_data/response-fields.adoc[]
+
+==== Get All Purchase Orders List Report As Pdf
+
+*Requisição*
+include::{snippets}/dashboard_test/get_all_purchase_orders_list_report_as_pdf/http-request.adoc[]
+include::{snippets}/dashboard_test/get_all_purchase_orders_list_report_as_pdf/request-parameters.adoc[]
+
+==== Get All Purchase Orders List Report By Status As Pdf
+
+*Requisição*
+include::{snippets}/dashboard_test/get_all_purchase_orders_list_report_by_status_as_pdf/http-request.adoc[]
+include::{snippets}/dashboard_test/get_all_purchase_orders_list_report_by_status_as_pdf/request-parameters.adoc[]
+
+==== Get In Transit Purchase Orders List Report As Pdf
+
+*Requisição*
+include::{snippets}/dashboard_test/get_in_transit_purchase_orders_list_report_as_pdf/http-request.adoc[]
+include::{snippets}/dashboard_test/get_in_transit_purchase_orders_list_report_as_pdf/request-parameters.adoc[]
+
+==== Get Realized Purchase Orders List Report As Pdf
+
+*Requisição*
+include::{snippets}/dashboard_test/get_realized_purchase_orders_list_report_as_pdf/http-request.adoc[]
+include::{snippets}/dashboard_test/get_realized_purchase_orders_list_report_as_pdf/request-parameters.adoc[]
+
+==== Get All Purchase Orders List Report As Csv
+
+*Requisição*
+include::{snippets}/dashboard_test/get_all_purchase_orders_list_report_as_csv/http-request.adoc[]
+include::{snippets}/dashboard_test/get_all_purchase_orders_list_report_as_csv/request-parameters.adoc[]
+
+==== Get In Transit Purchase Orders List Report As Csv
+
+*Requisição*
+include::{snippets}/dashboard_test/get_in_transit_purchase_orders_list_report_as_csv/http-request.adoc[]
+include::{snippets}/dashboard_test/get_in_transit_purchase_orders_list_report_as_csv/request-parameters.adoc[]
+
+==== Get Realized Purchase Orders List Report As Csv
+
+*Requisição*
+include::{snippets}/dashboard_test/get_realized_purchase_orders_list_report_as_csv/http-request.adoc[]
+include::{snippets}/dashboard_test/get_realized_purchase_orders_list_report_as_csv/request-parameters.adoc[]
+
+=== Endereços
+
+Esta sessão refere-se ao módulo de utilidade de busca por endereços.
+Este módulo executa uma consulta em API de terceiros, e tem apenas caráter de auxiliar os usuários finais no preenchimento e cadastro de endereços presentes nos cadastros de fornecedores (Endereço do fornecedor) e ordens de compra (Endereço de entrega).
+
+==== Find Address By Postal Code
+
+Pesquisa um endereço a partir de um CEP passado como parâmetro.
+Serviço sujeito a disponibilidade de terceiros.
+
+*Requisição*
+include::{snippets}/address_test/find_address_by_postal_code/http-request.adoc[]
+include::{snippets}/address_test/find_address_by_postal_code/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/address_test/find_address_by_postal_code/http-response.adoc[]
+include::{snippets}/address_test/find_address_by_postal_code/response-fields.adoc[]
+
+=== Funcionários
+
+Endpoints relacionados ao módulo de funcionários.
+
+==== Find By Name
+
+*Requisição*
+include::{snippets}/employees_test/find_by_name/http-request.adoc[]
+include::{snippets}/employees_test/find_by_name/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/employees_test/find_by_name/http-response.adoc[]
+include::{snippets}/employees_test/find_by_name/response-fields.adoc[]
+
+==== Find By Name And Permissions
+
+*Requisição*
+include::{snippets}/employees_test/find_by_name_and_permissions/http-request.adoc[]
+include::{snippets}/employees_test/find_by_name_and_permissions/request-parameters.adoc[]
+include::{snippets}/employees_test/find_by_name_and_permissions/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/employees_test/find_by_name_and_permissions/http-response.adoc[]
+include::{snippets}/employees_test/find_by_name_and_permissions/response-fields.adoc[]
+
+==== Find By Id
+
+Pesquisa o registro pelo o id, gerado pelo banco de dados.
+
+*Requisição*
+include::{snippets}/employees_test/find_by_id/http-request.adoc[]
+include::{snippets}/employees_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/employees_test/find_by_id/http-response.adoc[]
+include::{snippets}/employees_test/find_by_id/response-fields.adoc[]
+
+==== Update
+
+Atualiza o nome e permissões de acesso de um usuário dado um ID.
+
+*Requisição*
+include::{snippets}/employees_test/update/http-request.adoc[]
+include::{snippets}/employees_test/update/path-parameters.adoc[]
+include::{snippets}/employees_test/update/request-body.adoc[]
+
+*Resposta*
+include::{snippets}/employees_test/update/http-response.adoc[]
+include::{snippets}/employees_test/update/response-fields.adoc[]
+
+=== Notificações
+
+Um módulo de notificações foi adicionado a fim de melhorar a experiência dos usuários.
+Para este módulo foi implementado WebSockets de forma que os usuários sejam notificados em tempo real sobre determinados eventos.
+Para que um usuário consiga estabilizar uma conexão com o WebSocket, é necessário que o mesmo informe um *access token* (token utilizado na autenticação OAuth2) no header, sendo muito similar ao protocolo OAuth2 neste aspecto, autenticando assim o usuário.
+
+Cada usuário possui um tópico o qual recebe suas notificações.
+Todas as notificações relacionadas a ele serão enviadas no endpoint:
+
+    /topic/notifications/{ID_DO_USUARIO}
+
+Desta forma, um mesmo usuário receberá as mesmas notificações mesmo que esteja logado em diversos dispositivos ao mesmo tempo.
+
+    Mesmo solicitando um access token no momento da conexão, um possível problema de segurança relacionado ao WebSocket é o presente usuário manter a conexão ativa, mesmo após o access token ter se tornado invalido. Logo, para evitar que informações sensíveis trafeguem no Websocket, amenizando problemas tais como as citadas anteriormente, as mensagens são enviadas apenas contendo um JSON no formato: { notification: ID }. Desta forma, caso a aplicação deseje realmente mostrar maiores detalhes, é necessário realizar uma requisição HTTP tradicional.
+
+Todas as notificações são salvas e são associadas aos usuários de acordo com as permissões.
+Ou seja, para que um usuário receba uma notificação de um evento específico, ele precisa possuir uma permissão associada a notificação deste evento.
+Considerando também que notificações são algo pessoais dos usuários, todos os endpoints utilizam o usuário logado para retornar apenas as notificações relacionadas a eles.
+
+==== Find By Id
+
+Pesquisa a notificação pelo o id, gerado pelo banco de dados, independente do usuário logado.
+
+*Requisição*
+include::{snippets}/notification_test/find_by_id/http-request.adoc[]
+include::{snippets}/notification_test/find_by_id/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/notification_test/find_by_id/http-response.adoc[]
+include::{snippets}/notification_test/find_by_id/response-fields.adoc[]
+
+==== Find All By Current Employee
+
+Pesquisa todas as notificações relacionadas ao usuário logado.
+
+*Requisição*
+include::{snippets}/notification_test/find_all_by_current_employee/http-request.adoc[]
+include::{snippets}/notification_test/find_all_by_current_employee/request-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/notification_test/find_all_by_current_employee/http-response.adoc[]
+include::{snippets}/notification_test/find_all_by_current_employee/response-fields.adoc[]
+
+==== Find All Unread By Current Employee
+
+Pesquisa todas as notificações não lidas relacionadas ao usuário logado.
+
+*Requisição*
+include::{snippets}/notification_test/find_all_unread_by_current_employee/http-request.adoc[]
+
+*Resposta*
+include::{snippets}/notification_test/find_all_unread_by_current_employee/http-response.adoc[]
+include::{snippets}/notification_test/find_all_unread_by_current_employee/response-fields.adoc[]
+
+==== Mark As Viewed
+
+Marca uma notificação como visualizada pelo usuário logado.
+
+*Requisição*
+include::{snippets}/notification_test/mark_as_viewed/http-request.adoc[]
+include::{snippets}/notification_test/mark_as_viewed/path-parameters.adoc[]
+
+*Resposta*
+include::{snippets}/notification_test/mark_as_viewed/http-response.adoc[]
+include::{snippets}/notification_test/mark_as_viewed/response-fields.adoc[]
+
+==== Mark All As Viewed
+
+Marca uma lista de notificações como visualizadas pelo usuário logado.
+
+*Requisição*
+include::{snippets}/notification_test/mark_all_as_viewed/http-request.adoc[]
+include::{snippets}/notification_test/mark_all_as_viewed/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/notification_test/mark_all_as_viewed/http-response.adoc[]
+include::{snippets}/notification_test/mark_all_as_viewed/response-fields.adoc[]
+
+=== Webhooks
+
+Para a integração entre diferentes APIs, principalmente entre Estoque e Compras, foi criado uma interface de Webhook, a qual consiste no seguinte fluxo:
+
+. Um evento ocorre em uma API. Esta, por sua vez, precisa informar todas as outras as quais dependem de tal informação;
+. A API onde ocorreu o evento envia então requisições HTTP para as demais cujo devem ser notificadas;
+. A API a qual recebe este Webhook valida a informação de acordo com os dados passados e por fim, responde com um status HTTP apropriado de acordo com a aceitação do webhook.
+
+Uma vez ententido este fluxo, é possível explicar as especificidades da implementação adotada:
+
+==== Implementação
+
+Nesta API, existe apenas um endpoint para receber webhooks.
+Trata-se de uma interface que recebe requisições HTTP POST no endpoint /webhooks.
+Este endpoint é publico (não utiliza o protocolo OAuth2 ou Basic), entretanto, possui sua própria forma de validação das informações através de um Header chamado *Signature*.
+Este header é obrigatório e tem como objetivo validar ou não um webhook enviado.
+
+A validação do cabeçalho *Signature* ocorre da seguinte maneira:
+
+  SHA256 ( {nome da api de origem}.{nome do evento}.{chave unica da API de origem} )
+
+onde:
+
+- Nome da api de origem: consiste em strings (constantes), sendo: PURCHASE_API,STOCK_API ou SMARTNET_API;
+
+- Nome do evento: consiste em strings (constantes), sendo: PURCHASE_API_SAVE_PRODUCT, PURCHASE_API_SAVE_PURCHASE_ORDER, entre outros.
+Caso sejam criados novos, opte por manter a estrutura de {nome aplicação}_{nome do evento};
+
+- Chave unica da API de origem: consiste em uma chave privada.
+Cada API possui a sua respectiva chave e esta é compartilhada com as demais.
+
+Após a concatenação entre as informações, um algoritmo de SHA256 é aplicado nesta String gerada.
+
+Para realizar a validação do webhook, a API de destino deve gerar a *Signature* correspondente de acordo com as informações do Webhook recebido e então comparar com a Signature enviada.
+Caso sejam iguais, trata-se de um webhook válido.
+
+==== On Save Entry - Receive
+
+Emitido pela API de estoque, quando uma nova entrada a partir de uma ordem de compra é salva.
+
+*Requisição*
+include::{snippets}/webhook_docs/web_hook_receive_purchase_order_by_entry/http-request.adoc[]
+include::{snippets}/webhook_docs/web_hook_receive_purchase_order_by_entry/request-fields.adoc[]
+
+*Resposta*
+include::{snippets}/webhook_docs/web_hook_receive_purchase_order_by_entry/http-response.adoc[]
+
+=== Erros globais da aplicação
+
+Esta sessão tem como objetivo evidenciar os formatos comuns de erros durante as requisições
+
+==== 400 - Bad Request
+
+include::{snippets}/error_handler_test/bad_request/http-response.adoc[]
+
+==== 401 - Unauthorized
+
+include::{snippets}/error_handler_test/unauthenticated/http-response.adoc[]
+include::{snippets}/error_handler_test/unauthenticated/response-fields.adoc[]
+
+==== 403 - Forbidden
+
+include::{snippets}/error_handler_test/forbidden/http-response.adoc[]
+
+==== 404 - Not Found
+
+include::{snippets}/error_handler_test/not_found/http-response.adoc[]
+include::{snippets}/error_handler_test/not_found/response-fields.adoc[]
+
+==== 500 - Internal Server Error
+
+include::{snippets}/error_handler_test/internal_server_error/http-response.adoc[]
+include::{snippets}/error_handler_test/internal_server_error/response-fields.adoc[]
