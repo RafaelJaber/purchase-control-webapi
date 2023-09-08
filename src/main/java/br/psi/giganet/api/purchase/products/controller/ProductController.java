@@ -35,13 +35,13 @@ public class ProductController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @RoleProductsWrite
+    //@RoleProductsWrite
     public Optional<ProductProjection> insert(@RequestBody @Valid ProductRequest product) {
         return this.products.insert(adapter.transform(product)).map(adapter::transform);
     }
 
     @PutMapping("/{id}")
-    @RoleProductsWrite
+    //@RoleProductsWrite
     public Optional<ProductProjection> update(
             @PathVariable Long id,
             @RequestBody @Valid ProductRequest product) {
